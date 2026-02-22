@@ -2,23 +2,18 @@
     "version": 2,
     "builds": [
         {
-            "src": "server.js",
-            "use": "@vercel/node",
-            "config": {
-                "includeFiles": [
-                    "public/**"
-                ]
-            }
+            "src": "server.py",
+            "use": "@vercel/python"
         }
     ],
     "routes": [
         {
             "src": "/api/(.*)",
-            "dest": "server.js"
+            "dest": "server.py"
         },
         {
             "src": "/(.*)",
-            "dest": "server.js"
+            "dest": "server.py"
         }
     ]
 }
