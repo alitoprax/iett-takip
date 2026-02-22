@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#f6f7f8">
+    <title>IETT Canlı Takip</title>
+    <!-- Plus Jakarta Sans -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <!-- Material Symbols Outlined -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap"
+        rel="stylesheet">
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="mobile.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+</head>
+
+<body>
+
+    <div id="app">
+
+        <!-- ===== SCREEN 1: HARITA ===== -->
+        <div id="screen-harita" class="screen active">
+            <div id="map-container">
+                <div id="map"></div>
+
+                <!-- Floating liquid glass search bar -->
+                <div class="map-search-bar liquid-glass" id="mapSearchBar">
+                    <span class="material-symbols-outlined mat-icon">search</span>
+                    <input type="text" id="mapSearchInput" placeholder="Hat veya durak ara..." autocomplete="off">
+                    <button class="map-tune-btn" id="refreshBtnTop" onclick="manualRefreshMobile()"
+                        title="Canlı Veriyi Yenile">
+                        <span class="material-symbols-outlined">sync</span>
+                    </button>
+                </div>
+
+                <!-- Quick chips -->
+                <div class="quick-chips" id="quickChips">
+                    <button class="chip liquid-glass" onclick="mobileSelectLine('500T','TUZLA - 4.LEVENT')">
+                        <span class="material-symbols-outlined mat-icon" style="color:#137fec">home</span> Ev
+                    </button>
+                    <button class="chip liquid-glass" onclick="mobileSelectLine('29','TAKSIM - TOPKAPI')">
+                        <span class="material-symbols-outlined mat-icon" style="color:#ef4444">work</span> İş
+                    </button>
+                    <button class="chip liquid-glass" onclick="showNearbyPanel()">
+                        <span class="material-symbols-outlined mat-icon" style="color:#f59e0b">star</span> Yakın
+                        Duraklar
+                    </button>
+                </div>
+
+                <!-- Map controls -->
+                <div class="map-controls">
+                    <button class="map-ctrl-btn liquid-glass" id="locateBtn" title="Konumuma git">
+                        <span class="material-symbols-outlined" style="font-size:20px">my_location</span>
+                    </button>
+                    <button class="map-ctrl-btn liquid-glass" id="refreshMapBtn" title="Güncelle"
+                        onclick="manualRefreshMobile()">
+                        <span class="material-symbols-outlined" style="font-size:20px">refresh</span>
+                    </button>
+                </div>
+
+                <!-- Search dropdown -->
+                <div class="map-search-results liquid-glass-strong" id="mapSearchResults" style="display:none"></div>
+            </div>
+
+            <!-- Bottom Sheet — draggable, liquid glass -->
+            <div class="bottom-sheet liquid-glass-strong" id="bottomSheet">
+                <!-- Drag handle area -->
+                <div class="sheet-handle-area" id="sheetHandleArea">
+                    <div class="sheet-handle"></div>
+                </div>
+
+                <!-- Scrollable content -->
+                <div class="sheet-body" id="sheetBody">
+
+                    <!-- Nearby Panel -->
+                    <div id="nearbyPanel">
+                        <div class="sheet-header">
+                            <span class="sheet-title">Yakın Duraklar &amp; Kalkışlar</span>
+                            <span class="live-badge">
+                                <span class="live-dot"></span> Canlı
+                            </span>
+                        </div>
+                        <div id="nearbyList" class="nearby-list">
+                            <div class="empty-state">📍 Konum bilgisi alınıyor...</div>
+                        </div>
+                    </div>
+
+                    <!-- Line Detail Panel -->
+                    <div id="lineDetailPanel" style="display:none">
+                        <div class="sheet-header">
+                            <button class="back-btn" onclick="closeLineDetail()">
+                                <span class="material-symbols-outlined" style="font-size:20px">arrow_back_ios</span>
+                            </button>
+                            <div class="line-detail-title">
+                                <span class="sheet-line-badge" id="detailLineBadge">--</span>
+                                <span class="sheet-line-name" id="detailLineName">Yükleniyor...</span>
+                            </div>
+                            <button class="fav-star-btn" id="detailFavBtn" onclick="toggleMobileFav()">
+                                <span class="material-symbols-outlined" style="font-size:22px">star</span>
+                            </button>
+                        </div>
+
+                        <div class="detail-stats">
+                            <div class="dstat">
+                                <span class="dstat-val" id="detailBusCount">-</span>
+                                <span class="dstat-lbl">Otobüs</span>
+                            </div>
+                            <div class="dstat">
+                                <span class="dstat-val" id="detailStopCount">-</span>
+                                <span class="dstat-lbl">📍 Durak</span>
+                            </div>
+                            <div class="dstat">
+                                <span class="dstat-val" id="detailUpdateTime">-</span>
+                                <span class="dstat-lbl">🕐 Güncelleme</span>
+                            </div>
+                        </div>
+
+                        <div class="dir-toggle">
+                            <button class="dir-btn active" id="mDirG" onclick="setMobileDir('G')">→ Gidiş</button>
+                            <button class="dir-btn" id="mDirD" onclick="setMobileDir('D')">← Dönüş</button>
+                        </div>
+
+                        <div id="mVariantSelector" style="display:none"></div>
+
+                        <div id="detailLoading" class="loading-row" style="display:none">
+                            <div class="spinner"></div>
+                            <span>Güzergah yükleniyor...</span>
+                        </div>
+
+                        <!-- Content Tabs -->
+                        <div class="detail-tabs">
+                            <button class="detail-tab active" data-tab="stops" onclick="switchDetailTab('stops', this)">
+                                <span class="material-symbols-outlined" style="font-size:16px">pin_drop</span> Duraklar
+                            </button>
+                            <button class="detail-tab" data-tab="timetable"
+                                onclick="switchDetailTab('timetable', this)">
+                                <span class="material-symbols-outlined" style="font-size:16px">schedule</span> Saatler
+                            </button>
+                        </div>
+
+                        <!-- Tab: Stops -->
+                        <div class="tab-content active" id="tab-stops">
+                            <div class="stops-section">
+                                <div id="mStopsList" class="m-stops-list"></div>
+                            </div>
+                        </div>
+
+                        <!-- Tab: Timetable -->
+                        <div class="tab-content" id="tab-timetable">
+                            <div class="timetable-day-chips">
+                                <button class="tt-chip active" data-day="I" onclick="setTimetableDay('I', this)">İş
+                                    Günü</button>
+                                <button class="tt-chip" data-day="C"
+                                    onclick="setTimetableDay('C', this)">Cumartesi</button>
+                                <button class="tt-chip" data-day="P" onclick="setTimetableDay('P', this)">Pazar</button>
+                            </div>
+                            <div id="timetableGrid" class="timetable-grid">
+                                <div class="empty-state">Sefer saatleri yükleniyor...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stop Detail Panel -->
+                    <div id="stopDetailPanel" style="display:none">
+                        <div class="sheet-header">
+                            <button class="back-btn" onclick="closeStopDetail()">
+                                <span class="material-symbols-outlined" style="font-size:20px">arrow_back_ios</span>
+                            </button>
+                            <div class="line-detail-title">
+                                <div class="sri-stop-icon" style="margin-right:10px;">
+                                    <div
+                                        style="width:14px;height:14px;border-radius:50%;background:#6366f1;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.2)">
+                                    </div>
+                                </div>
+                                <div style="min-width:0;flex:1">
+                                    <div class="sheet-line-name" id="stopDetailName">Durak</div>
+                                    <div style="font-size:11px;color:#94a3b8;font-weight:600" id="stopDetailCode">#000
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stops-header">GELEN OTOBÜSLER (TAHMİNİ VARIŞ)</div>
+                        <div id="stopEtaList" class="nearby-list">
+                            <div class="empty-state">Yükleniyor...</div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== SCREEN 2: HATLAR ===== -->
+        <div id="screen-hatlar" class="screen">
+            <!-- Background blobs -->
+            <div class="bg-blob">
+                <div class="orb1"></div>
+                <div class="orb2"></div>
+            </div>
+
+            <div class="glass-header-bar glassmorphic" style="position:relative;z-index:2">
+                <div class="page-header-row">
+                    <h1 class="page-title">Hatlar</h1>
+                    <button class="icon-action-btn">
+                        <span class="material-symbols-outlined">filter_list</span>
+                    </button>
+                </div>
+                <div class="page-search-bar">
+                    <span class="material-symbols-outlined mat-icon">search</span>
+                    <input type="text" id="linesSearchInput" placeholder="Hat numarası veya güzergah ara..."
+                        autocomplete="off">
+                </div>
+                <div class="filter-chips">
+                    <button class="fchip active" data-filter="all" onclick="filterLines('all',this)">Tümü</button>
+                    <button class="fchip" data-filter="bus" onclick="filterLines('bus',this)">Otobüs</button>
+                    <button class="fchip" data-filter="tramvay" onclick="filterLines('tramvay',this)">Tramvay</button>
+                    <button class="fchip" data-filter="metrobus"
+                        onclick="filterLines('metrobus',this)">Metrobüs</button>
+                    <button class="fchip" data-filter="vapur" onclick="filterLines('vapur',this)">Vapur</button>
+                </div>
+            </div>
+
+            <div id="linesList" class="lines-page-list">
+                <div class="empty-state">Hat listesi yükleniyor...</div>
+            </div>
+        </div>
+
+        <!-- ===== SCREEN 3: QR OKUT ===== -->
+        <div id="screen-qr" class="screen">
+            <div class="qr-overlay">
+                <button class="qr-close-btn" onclick="switchScreen('harita')">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+                <button class="qr-torch-btn">
+                    <span class="material-symbols-outlined">flashlight_on</span>
+                </button>
+                <div class="qr-frame">
+                    <div class="qr-corner tl"></div>
+                    <div class="qr-corner tr"></div>
+                    <div class="qr-corner bl"></div>
+                    <div class="qr-corner br"></div>
+                    <div class="qr-scan-line"></div>
+                </div>
+                <p class="qr-hint">QR kodu okutmak için kamerayı otobüs<br>numarasına hizala</p>
+            </div>
+            <div class="qr-bottom">
+                <div class="sheet-header">
+                    <span class="sheet-title">Son Taramalar</span>
+                    <button class="text-action">Tümünü Gör</button>
+                </div>
+                <div id="recentScans">
+                    <div class="empty-state">Son tarama bulunamadı</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== SCREEN 4: FAVORİLER ===== -->
+        <div id="screen-favoriler" class="screen">
+            <!-- Blurred map bg -->
+            <div class="bg-blob">
+                <div class="orb1" style="background:rgba(19,127,236,0.1)"></div>
+                <div class="orb2" style="background:rgba(245,158,11,0.1)"></div>
+            </div>
+
+            <div class="glass-header-bar" style="position:relative;z-index:2;padding-top:52px">
+                <div class="page-header-row">
+                    <h1 class="page-title">Favoriler</h1>
+                    <button class="icon-action-btn" onclick="addFavPrompt()">
+                        <span class="material-symbols-outlined">add</span>
+                    </button>
+                </div>
+                <div class="page-search-bar">
+                    <span class="material-symbols-outlined mat-icon">search</span>
+                    <input type="text" id="favSearchInput" placeholder="Favorilerinde ara..." autocomplete="off">
+                </div>
+            </div>
+
+            <div id="favorilesList" class="favorites-list">
+                <div class="empty-state">⭐ Henüz favori hat eklenmedi.<br><small>Bir hat seçip ★ tuşuna bas.</small>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== SCREEN 5: AYARLAR ===== -->
+        <div id="screen-ayarlar" class="screen">
+            <!-- Blurred bg -->
+            <div class="bg-blob">
+                <div class="orb1" style="background:rgba(168,85,247,0.1)"></div>
+                <div class="orb2" style="background:rgba(19,127,236,0.1)"></div>
+            </div>
+
+            <div class="settings-page-header" style="position:relative;z-index:2">
+                <h1>Ayarlar</h1>
+                <p>Uygulama deneyiminizi özelleştirin</p>
+            </div>
+
+            <div style="position:relative;z-index:2">
+                <div class="settings-section-label">PROFİL</div>
+                <div class="settings-glass-card">
+                    <div class="settings-row" onclick="alert('Giriş yakında!')">
+                        <div class="settings-icon-wrap blue">
+                            <span class="material-symbols-outlined mat-icon">account_circle</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Misafir Kullanıcı</div>
+                            <div class="settings-row-sub">Giriş yap veya Kayıt ol</div>
+                        </div>
+                        <span class="settings-arrow"><span class="material-symbols-outlined">chevron_right</span></span>
+                    </div>
+                </div>
+
+                <div class="settings-section-label">BİLDİRİMLER</div>
+                <div class="settings-glass-card">
+                    <div class="settings-row">
+                        <div class="settings-icon-wrap blue">
+                            <span class="material-symbols-outlined mat-icon">notifications_active</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Varış Hatırlatıcıları</div>
+                            <div class="settings-row-sub">Otobüs yaklaştığında bildir</div>
+                        </div>
+                        <label class="toggle-sw-wrap">
+                            <input type="checkbox" id="notifArrival" checked>
+                            <span class="tslider"></span>
+                        </label>
+                    </div>
+                    <div class="settings-divider"></div>
+                    <div class="settings-row">
+                        <div class="settings-icon-wrap yellow">
+                            <span class="material-symbols-outlined mat-icon">warning</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Hat Duyuruları</div>
+                            <div class="settings-row-sub">Güzergah değişikliklerini bildir</div>
+                        </div>
+                        <label class="toggle-sw-wrap">
+                            <input type="checkbox" id="notifLine" checked>
+                            <span class="tslider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="settings-section-label">DİL VE BÖLGE</div>
+                <div class="settings-glass-card">
+                    <div class="settings-row">
+                        <div class="settings-icon-wrap purple">
+                            <span class="material-symbols-outlined mat-icon">language</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Uygulama Dili</div>
+                        </div>
+                        <span class="settings-value">Türkçe <span
+                                class="material-symbols-outlined">unfold_more</span></span>
+                    </div>
+                    <div class="settings-divider"></div>
+                    <div class="settings-row">
+                        <div class="settings-icon-wrap green">
+                            <span class="material-symbols-outlined mat-icon">straighten</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Mesafe Birimi</div>
+                        </div>
+                        <span class="settings-value">Kilometre (km) <span
+                                class="material-symbols-outlined">unfold_more</span></span>
+                    </div>
+                </div>
+
+                <div class="settings-section-label">UYGULAMA HAKKINDA</div>
+                <div class="settings-glass-card">
+                    <div class="settings-row">
+                        <div class="settings-icon-wrap gray">
+                            <span class="material-symbols-outlined mat-icon">info</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Sürüm Bilgisi</div>
+                        </div>
+                        <span class="settings-value">v1.0.0</span>
+                    </div>
+                    <div class="settings-divider"></div>
+                    <div class="settings-row">
+                        <div class="settings-icon-wrap gray">
+                            <span class="material-symbols-outlined mat-icon">security</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Gizlilik Politikası</div>
+                        </div>
+                        <span class="settings-arrow"><span class="material-symbols-outlined">chevron_right</span></span>
+                    </div>
+                    <div class="settings-divider"></div>
+                    <div class="settings-row">
+                        <div class="settings-icon-wrap rose">
+                            <span class="material-symbols-outlined mat-icon">rate_review</span>
+                        </div>
+                        <div class="settings-row-content">
+                            <div class="settings-row-title">Uygulamayı Puanla</div>
+                        </div>
+                        <span class="settings-arrow"><span class="material-symbols-outlined">open_in_new</span></span>
+                    </div>
+                </div>
+
+                <p class="settings-footer">Veriler İBB Açık Veri Portalı üzerinden sağlanmaktadır.</p>
+            </div>
+        </div>
+
+        <!-- ===== BOTTOM NAV — floating oval pill ===== -->
+        <nav class="bottom-nav liquid-glass-strong" id="bottomNav">
+            <button class="nav-btn active" data-screen="harita" onclick="switchScreen('harita')">
+                <div class="nav-icon-wrap">
+                    <span class="material-symbols-outlined mat-icon">map</span>
+                </div>
+                <span class="nav-label">Harita</span>
+            </button>
+            <button class="nav-btn" data-screen="hatlar" onclick="switchScreen('hatlar')">
+                <div class="nav-icon-wrap">
+                    <span class="material-symbols-outlined mat-icon">directions_bus</span>
+                </div>
+                <span class="nav-label">Hatlar</span>
+            </button>
+            <button class="nav-btn qr-nav-btn" data-screen="qr" onclick="switchScreen('qr')">
+                <div class="qr-fab">
+                    <span class="material-symbols-outlined mat-icon">qr_code_scanner</span>
+                </div>
+                <span class="nav-label">QR Okut</span>
+            </button>
+            <button class="nav-btn" data-screen="favoriler" onclick="switchScreen('favoriler')">
+                <div class="nav-icon-wrap">
+                    <span class="material-symbols-outlined mat-icon">favorite</span>
+                </div>
+                <span class="nav-label">Favoriler</span>
+            </button>
+            <button class="nav-btn" data-screen="ayarlar" onclick="switchScreen('ayarlar')">
+                <div class="nav-icon-wrap">
+                    <span class="material-symbols-outlined mat-icon">settings</span>
+                </div>
+                <span class="nav-label">Ayarlar</span>
+            </button>
+        </nav>
+
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-polylinedecorator@1.6.0/dist/leaflet.polylineDecorator.js"></script>
+    <script src="mobile.js"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js');
+        }
+    </script>
+</body>
+
+</html>
