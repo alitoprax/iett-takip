@@ -62,7 +62,7 @@ function extractSoapResult(parsed, method) {
       || parsed['soap12:Envelope']?.['soap12:Body']
       || Object.values(parsed)[0]?.['soap:Body']
       || Object.values(parsed)[0]?.['soap12:Body'];
-    
+
     if (!body) {
       // Tüm olası yapıları dene
       const envelope = Object.values(parsed)[0];
@@ -239,6 +239,11 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`🚌 IETT Canlı Takip sunucusu http://localhost:${PORT} adresinde çalışıyor`);
-});
+// Export the app for Vercel
+module.exports = app;
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`🚌 IETT Canlı Takip sunucusu http://localhost:${PORT} adresinde çalışıyor`);
+  });
+}
