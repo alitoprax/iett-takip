@@ -4,24 +4,36 @@
         {
             "src": "server.py",
             "use": "@vercel/python"
+        },
+        {
+            "src": "public/**/*",
+            "use": "@vercel/static"
         }
     ],
-    "rewrites": [
+    "routes": [
         {
-            "source": "/api/:match*",
-            "destination": "/server.py"
+            "src": "/api/(.*)",
+            "dest": "server.py"
         },
         {
-            "source": "/mobile",
-            "destination": "/index.html"
+            "src": "/(index\\.html|mobile\\.js|mobile\\.css|manifest\\.json|sw\\.js)",
+            "dest": "/public/$1"
         },
         {
-            "source": "/mobil",
-            "destination": "/index.html"
+            "src": "/mobile",
+            "dest": "/public/index.html"
         },
         {
-            "source": "/(?!api).*",
-            "destination": "/public/$0"
+            "src": "/mobil",
+            "dest": "/public/index.html"
+        },
+        {
+            "src": "/",
+            "dest": "/public/index.html"
+        },
+        {
+            "src": "/(.*)",
+            "dest": "/public/$1"
         }
     ]
 }
