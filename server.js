@@ -5,25 +5,31 @@ const xml2js = require('xml2js');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(process.cwd(), 'public')));
 
 // ============================================================
-// Cache
+// Configuration & Cache
 // ============================================================
+const WORKERS_BASE = 'https://iett.rednexie.workers.dev';
+const IBB_BASE = 'https://api.ibb.gov.tr/iett';
+const OSRM_BASE = 'https://router.project-osrm.org';
+
 const cache = {
   hatlar: { data: null, timestamp: 0 },
+  duraklar_all: { data: null, timestamp: 0 },
+  generic: {} // general purpose cache
 };
-const CACHE_TTL = 60 * 60 * 1000; // 1 saat
+
+const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours for static data
+const BUS_POS_TTL = 20 * 1000; // 20 seconds for vehicle positions
 
 // ============================================================
-// SOAP Helpers
+// Helpers
 // ============================================================
-const IBB_BASE = 'https://api.ibb.gov.tr/iett';
-
 function buildSoapEnvelope(namespace, method, params = {}) {
   let paramXml = '';
   for (const [key, value] of Object.entries(params)) {
@@ -44,10 +50,8 @@ function buildSoapEnvelope(namespace, method, params = {}) {
 async function soapRequest(url, namespace, method, params = {}) {
   const envelope = buildSoapEnvelope(namespace, method, params);
   const response = await axios.post(url, envelope, {
-    headers: {
-      'Content-Type': 'application/soap+xml; charset=utf-8',
-    },
-    timeout: 30000,
+    headers: { 'Content-Type': 'application/soap+xml; charset=utf-8' },
+    timeout: 15000,
   });
   const result = await xml2js.parseStringPromise(response.data, {
     explicitArray: false,
@@ -58,192 +62,235 @@ async function soapRequest(url, namespace, method, params = {}) {
 
 function extractSoapResult(parsed, method) {
   try {
-    const body = parsed['soap:Envelope']?.['soap:Body']
-      || parsed['soap12:Envelope']?.['soap12:Body']
-      || Object.values(parsed)[0]?.['soap:Body']
-      || Object.values(parsed)[0]?.['soap12:Body'];
-
-    if (!body) {
-      // Tüm olası yapıları dene
-      const envelope = Object.values(parsed)[0];
-      const bodyKey = Object.keys(envelope).find(k => k.toLowerCase().includes('body'));
-      if (bodyKey) {
-        const b = envelope[bodyKey];
-        const responseKey = `${method}Response`;
-        const resultKey = `${method}Result`;
-        if (b[responseKey]) {
-          return b[responseKey][resultKey] || b[responseKey];
-        }
-      }
-      return null;
-    }
-
+    const envelope = Object.values(parsed)[0];
+    const body = envelope['soap:Body'] || envelope['soap12:Body'] || envelope['Body'];
     const responseKey = `${method}Response`;
     const resultKey = `${method}Result`;
     return body[responseKey]?.[resultKey] || body[responseKey] || null;
-  } catch (e) {
-    console.error('SOAP parse error:', e.message);
-    return null;
-  }
+  } catch (e) { return null; }
+}
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// ============================================================
+// Core Logic Functions
+// ============================================================
+
+async function getAllLines() {
+  if (cache.hatlar.data && Date.now() - cache.hatlar.timestamp < CACHE_TTL) return cache.hatlar.data;
+  try {
+    const url = `${IBB_BASE}/UlasimAnaVeri/HatDurakGuzergah.asmx`;
+    const parsed = await soapRequest(url, 'http://tempuri.org/', 'GetHat_json');
+    const result = extractSoapResult(parsed, 'GetHat_json');
+    let raw = typeof result === 'string' ? JSON.parse(result) : (result || []);
+    const data = raw.map(h => ({
+      SHPIETT: h.SHATKODU || h.SHPIETT || '',
+      SHAT_ADI: h.SHATADI || h.SHAT_ADI || ''
+    })).filter(h => h.SHPIETT);
+    cache.hatlar = { data, timestamp: Date.now() };
+    return data;
+  } catch (e) { return cache.hatlar.data || []; }
+}
+
+async function getAllStops() {
+  if (cache.duraklar_all.data && Date.now() - cache.duraklar_all.timestamp < CACHE_TTL) return cache.duraklar_all.data;
+  try {
+    const url = `${IBB_BASE}/UlasimAnaVeri/HatDurakGuzergah.asmx`;
+    const parsed = await soapRequest(url, 'http://tempuri.org/', 'GetDurak_json');
+    const result = extractSoapResult(parsed, 'GetDurak_json');
+    let raw = typeof result === 'string' ? JSON.parse(result) : (result || []);
+    const data = raw.map(d => {
+      let lat = 0, lon = 0;
+      const coord = d.KOORDINAT || '';
+      const m = coord.match(/POINT\s*\(([0-9.]+)\s+([0-9.]+)\)/);
+      if (m) { lon = parseFloat(m[1]); lat = parseFloat(m[2]); }
+      return {
+        kod: String(d.SDURAKKODU || d.DURAKKODU || ''),
+        adi: d.SDURAKADI || d.DURAKADI || '',
+        lat, lon,
+        yon: d.SYON || ''
+      };
+    }).filter(d => d.kod);
+    cache.duraklar_all = { data, timestamp: Date.now() };
+    return data;
+  } catch (e) { return cache.duraklar_all.data || []; }
 }
 
 // ============================================================
 // API Endpoints
 // ============================================================
 
-// 1. Tüm Hat Listesi
+// Arama: Hatlar
+app.get('/api/hat-ara', async (req, res) => {
+  const q = (req.query.q || '').toLowerCase();
+  try {
+    const resp = await axios.get(`${WORKERS_BASE}/api/line-suggestions?q=${encodeURIComponent(q)}`);
+    res.json(resp.data);
+  } catch (e) {
+    const all = await getAllLines();
+    const filtered = all.filter(h => h.SHPIETT.toLowerCase().includes(q) || h.SHAT_ADI.toLowerCase().includes(q)).slice(0, 10);
+    res.json(filtered);
+  }
+});
+
+// Arama: Duraklar
+app.get('/api/durak-ara', async (req, res) => {
+  const q = (req.query.q || '').toLowerCase();
+  const allStops = await getAllStops();
+  const filtered = allStops.filter(s => s.kod.toLowerCase().includes(q) || s.adi.toLowerCase().includes(q)).slice(0, 15);
+  res.json(filtered);
+});
+
+// Hat Listesi (Tümü)
 app.get('/api/hatlar', async (req, res) => {
-  try {
-    // Cache kontrolü
-    if (cache.hatlar.data && Date.now() - cache.hatlar.timestamp < CACHE_TTL) {
-      return res.json(cache.hatlar.data);
-    }
-
-    const url = `${IBB_BASE}/UlasimAnaVeri/HatDurakGuzergah.asmx`;
-    const namespace = 'http://tempuri.org/';
-    const parsed = await soapRequest(url, namespace, 'GetHat_json');
-    const result = extractSoapResult(parsed, 'GetHat_json');
-
-    let hatlar = [];
-    if (result) {
-      try {
-        hatlar = typeof result === 'string' ? JSON.parse(result) : result;
-      } catch {
-        hatlar = [];
-      }
-    }
-
-    // Hatları düzenle
-    const formatted = Array.isArray(hatlar) ? hatlar.map(h => ({
-      SHPIETT: h.SHPIETT || h.HAT_NO || '',
-      SHAT_ADI: h.SHAT_ADI || h.HAT_ADI || '',
-      SGUZER: h.SGUZER || h.GUZERGAH || '',
-      SHAH_ILK_: h.SHAH_ILK_ || h.ILKSEFER || '',
-      SHAH_SON_: h.SHAH_SON_ || h.SONSEFER || '',
-    })) : [];
-
-    cache.hatlar = { data: formatted, timestamp: Date.now() };
-    res.json(formatted);
-  } catch (error) {
-    console.error('Hat listesi hatası:', error.message);
-    res.status(500).json({ error: 'Hat listesi alınamadı', detail: error.message });
-  }
+  const data = await getAllLines();
+  res.json(data);
 });
 
-// 2. Hat Güzergahı
+// Hat Güzergahı
 app.get('/api/guzergah/:hatKodu', async (req, res) => {
+  const hatKodu = req.params.hatKodu;
   try {
-    const hatKodu = req.params.hatKodu;
-    const url = `${IBB_BASE}/UlasimAnaVeri/HatDurakGuzergah.asmx`;
-    const namespace = 'http://tempuri.org/';
+    const resp = await axios.get(`${WORKERS_BASE}/api/route-stations?hatkod=${encodeURIComponent(hatKodu)}&langid=1`);
+    const html = resp.data;
 
-    // Güzergah koordinatlarını al
-    const parsedGuzergah = await soapRequest(url, namespace, 'GetHatCev  _json', { HatKodu: hatKodu });
-    const guzergahResult = extractSoapResult(parsedGuzergah, 'GetHatCev  _json');
+    // Basit bir regex ile HTML'den durakları ayıklayalım (Python'daki mantık)
+    const items = [...html.matchAll(/dkod=(\d+)[^"]*stationname=([^"&]+)[^>]*>.*?<p>(\d+)\.\s*([^<]+)/g)];
+    const stops = items.map(m => ({
+      sira: parseInt(m[3]),
+      kod: m[1],
+      adi: decodeURIComponent(m[2].replace(/\+/g, ' '))
+    }));
 
-    let guzergah = [];
-    if (guzergahResult) {
-      try {
-        guzergah = typeof guzergahResult === 'string' ? JSON.parse(guzergahResult) : guzergahResult;
-      } catch { guzergah = []; }
-    }
+    // Durak GPS verilerini ekle
+    const allStops = await getAllStops();
+    const stopMap = {};
+    allStops.forEach(s => stopMap[s.kod] = s);
 
-    // Durakları al
-    const parsedDurak = await soapRequest(url, namespace, 'GetDurak_json', { HatKodu: hatKodu });
-    const durakResult = extractSoapResult(parsedDurak, 'GetDurak_json');
+    const half = Math.floor(stops.length / 2);
+    const gidis = stops.slice(0, half).map(s => ({ ...s, ...(stopMap[s.kod] || {}) }));
+    const donus = stops.slice(half).map(s => ({ ...s, ...(stopMap[s.kod] || {}) }));
 
-    let duraklar = [];
-    if (durakResult) {
-      try {
-        duraklar = typeof durakResult === 'string' ? JSON.parse(durakResult) : durakResult;
-      } catch { duraklar = []; }
-    }
-
-    res.json({ guzergah, duraklar });
-  } catch (error) {
-    console.error('Güzergah hatası:', error.message);
-    res.status(500).json({ error: 'Güzergah bilgisi alınamadı', detail: error.message });
+    res.json({
+      duraklar: { G: gidis, D: donus },
+      routeLine: { G: [], D: [] }, // OSRM geometry opsiyonel
+      bilgi: { hatKodu }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// 3. Hat Üzerindeki Otobüs Konumları (CANLI)
+// Canlı Otobüs Konumları
 app.get('/api/otobus-konum/:hatKodu', async (req, res) => {
+  const hatKodu = req.params.hatKodu;
   try {
-    const hatKodu = req.params.hatKodu;
-    const url = `${IBB_BASE}/FiloDurak/FiloDurakSor662.asmx`;
-    const namespace = 'http://tempuri.org/';
+    const resp = await axios.post(`${WORKERS_BASE}/line-vehicles`, { line: hatKodu });
+    const raw = resp.data.vehicles || resp.data;
+    const otobusler = raw.map(v => {
+      const gz = v.guzergah || '';
+      const parts = gz.split('_');
+      return {
+        kapino: v.vehicleDoorCode || '',
+        lon: parseFloat(v.lon || 0),
+        lat: parseFloat(v.lat || 0),
+        direction: v.direction || '',
+        dir: parts.includes('G') ? 'G' : parts.includes('D') ? 'D' : null,
+        variant: parts[parts.length - 1] || ''
+      };
+    });
 
-    const parsed = await soapRequest(url, namespace, 'GetHatOtoKonum_json', { HatNo: hatKodu });
-    const result = extractSoapResult(parsed, 'GetHatOtoKonum_json');
-
-    let otobusler = [];
-    if (result) {
-      try {
-        otobusler = typeof result === 'string' ? JSON.parse(result) : result;
-      } catch { otobusler = []; }
-    }
-
-    // Konum bilgilerini düzenle
-    const formatted = Array.isArray(otobusler) ? otobusler.map(o => ({
-      kapino: o.kapino || o.KAPINO || '',
-      boylam: parseFloat(o.boylam || o.BOYLAM || 0),
-      enlem: parseFloat(o.enlem || o.ENLEM || 0),
-      hiz: parseFloat(o.hiz || o.HIZ || 0),
-      yon: parseFloat(o.yon || o.YON || 0),
-      plaka: o.plaka || o.PLAKA || '',
-      hatNo: o.hatNo || o.HAT_NO || hatKodu,
-      son_konum_zamani: o.son_konum_zamani || o.SON_KONUM_ZAMANI || '',
-      yakinDurakKodu: o.yakinDurakKodu || o.YAKIN_DURAK_KODU || '',
-      guzpiett: o.guzpiett || o.GUZPIETT || '',
-      operator: o.operator || o.OPERATOR || '',
-    })) : [];
+    // Varyantları grupla
+    const variants = {};
+    otobusler.forEach(v => {
+      const key = `${v.dir}_${v.variant}`;
+      if (!variants[key]) variants[key] = { dir: v.dir, variant: v.variant, count: 0, label: v.direction };
+      variants[key].count++;
+    });
 
     res.json({
       hatKodu,
-      otobusler: formatted,
-      toplamOtobus: formatted.length,
-      guncellemeZamani: new Date().toISOString(),
+      otobusler,
+      toplamOtobus: otobusler.length,
+      varyantlar: Object.values(variants)
     });
-  } catch (error) {
-    console.error('Otobüs konum hatası:', error.message);
-    res.status(500).json({ error: 'Otobüs konumları alınamadı', detail: error.message });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-// 4. Durak detayı
-app.get('/api/durak/:durakKodu', async (req, res) => {
+// Durak Detayı & ETA (En Kritik Kısım)
+app.get('/api/durak-detay/:durakKodu', async (req, res) => {
+  const durakKodu = req.params.durakKodu;
+  const allStops = await getAllStops();
+  const stopInfo = allStops.find(s => s.kod === durakKodu);
+
+  if (!stopInfo) return res.status(404).json({ error: 'Durak bulunamadı' });
+
   try {
-    const durakKodu = req.params.durakKodu;
+    // IETT resmi "Yaklaşan Otobüsler" API'sini dene
     const url = `${IBB_BASE}/FiloDurak/FiloDurakSor662.asmx`;
-    const namespace = 'http://tempuri.org/';
-
-    const parsed = await soapRequest(url, namespace, 'GetDurakDetay_json', { DurakKodu: durakKodu });
+    const parsed = await soapRequest(url, 'http://tempuri.org/', 'GetDurakDetay_json', { DurakKodu: durakKodu });
     const result = extractSoapResult(parsed, 'GetDurakDetay_json');
+    const gelenlerRaw = typeof result === 'string' ? JSON.parse(result) : (result || []);
 
-    let durak = null;
-    if (result) {
-      try {
-        durak = typeof result === 'string' ? JSON.parse(result) : result;
-      } catch { durak = null; }
-    }
+    const gelenler = (Array.isArray(gelenlerRaw) ? gelenlerRaw : []).map(g => ({
+      hat: g.HATKODU || '',
+      kapino: g.KAPINO || '',
+      eta_dk: parseInt(g.KALANSURE) || 0,
+      mesafe_km: (parseInt(g.KALANMESAFE) || 0) / 1000,
+      yon: g.YON || ''
+    }));
 
-    res.json(durak);
-  } catch (error) {
-    console.error('Durak detay hatası:', error.message);
-    res.status(500).json({ error: 'Durak detayı alınamadı', detail: error.message });
+    res.json({
+      durak: stopInfo,
+      gelenler: gelenler.sort((a, b) => a.eta_dk - b.eta_dk)
+    });
+  } catch (e) {
+    res.json({ durak: stopInfo, gelenler: [], error: 'Canlı veri alınamadı' });
   }
 });
 
-// SPA fallback
+// Sefer Saatleri
+app.get('/api/sefer-saatleri/:hatKodu', async (req, res) => {
+  const hatKodu = req.params.hatKodu;
+  try {
+    const url = `${IBB_BASE}/UlasimAnaVeri/PlanlananSeferSaati.asmx`;
+    const parsed = await soapRequest(url, 'http://tempuri.org/', 'GetPlanlananSeferSaati_json', { HatKodu: hatKodu });
+    const result = extractSoapResult(parsed, 'GetPlanlananSeferSaati_json');
+    const raw = typeof result === 'string' ? JSON.parse(result) : (result || []);
+
+    const structured = { I: { G: [], D: [] }, C: { G: [], D: [] }, P: { G: [], D: [] } };
+    raw.forEach(s => {
+      const day = s.SGUNTIPI; // I, C, P
+      const dir = s.SYON; // G, D
+      if (structured[day] && structured[day][dir]) {
+        structured[day][dir].push({ t: s.DT, v: s.SGUZERAH });
+      }
+    });
+    res.json(structured);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Fallback for SPA
 app.get('*', (req, res) => {
   res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
 });
 
-// Export the app for Vercel
 module.exports = app;
 
 if (require.main === module) {
   app.listen(PORT, () => {
-    console.log(`🚌 IETT Canlı Takip sunucusu http://localhost:${PORT} adresinde çalışıyor`);
+    console.log(`🚌 IETT Sunucusu Port ${PORT} üzerinde aktif`);
+    getAllStops(); // Pre-cache stops
   });
 }
