@@ -1,0 +1,4 @@
+127.0.0.1 - - [21/Feb/2026 21:54:53] "GET /api/hat-ara?q=500T HTTP/1.1" 200 -
+127.0.0.1 - - [21/Feb/2026 21:54:54] "GET /api/hatlar HTTP/1.1" 200 -
+127.0.0.1 - - [21/Feb/2026 21:54:54] "GET /api/otobus-konum/500T HTTP/1.1" 200 -
+127.0.0.1 - - [21/Feb/2026 21:54:55] "GET /api/guzergah/500T HTTP/1.1" 200 -
